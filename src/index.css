@@ -1,0 +1,69 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-serif: "Playfair Display", Georgia, Cambria, "Times New Roman", Times, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  body {
+    font-family: var(--font-sans);
+    background-color: #F4F3EE;
+    color: #111111;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  h1, h2, h3, .font-serif {
+    font-family: var(--font-serif);
+  }
+
+  code, pre, .font-mono {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Swiss Editorial Paper & Ink Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #EAE8E0;
+}
+::-webkit-scrollbar-thumb {
+  background: #A8A29E;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #1C1C1C;
+}
+
+/* Precision square range sliders for scientific ink workbench */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: #EAE8E0;
+  height: 5px;
+  border: 1px solid #1C1C1C;
+  border-radius: 0;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 15px;
+  background: #111111;
+  border: 1px solid #FAF9F5;
+  border-radius: 0;
+  cursor: pointer;
+}
+input[type="range"]::-moz-range-thumb {
+  width: 11px;
+  height: 15px;
+  background: #111111;
+  border: 1px solid #FAF9F5;
+  border-radius: 0;
+  cursor: pointer;
+}
