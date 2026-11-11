@@ -1,6 +1,0 @@
-{
-  "name": "IGP-CQR Nocturnal PM2.5 Forecasting Workbench",
-  "description": "Advection-Guided Multi-Modal Fusion and Conformalized Quantile Boosting for 24-Hour Extreme Nocturnal PM2.5 Spike Forecasting in the Indo-Gangetic Plain (IEEE Research Notebook & Interactive Diagnostics).",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
