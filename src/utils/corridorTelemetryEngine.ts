@@ -406,7 +406,8 @@ export function buildReactiveSystemState(
   p: PerturbationState,
   selectedNodeId: CorridorNodeId,
   costRatioK: number,
-  liveNodesOverride?: Record<CorridorNodeId, NodeLiveTelemetry> | null
+  liveNodesOverride?: Partial<Record<CorridorNodeId, NodeLiveTelemetry>> | null,
+  observedSeriesOverride?: number[] | null
 ) {
   // 1. Node telemetry across all 5 IGP stations
   const nodeReadouts: Record<CorridorNodeId, NodeLiveTelemetry> = {} as Record<
@@ -417,8 +418,9 @@ export function buildReactiveSystemState(
   const prelimIndices = computeReactivePhysicsIndices(p, 210, 310);
 
   for (const node of IGP_CORRIDOR_NODES) {
-    if (liveNodesOverride && liveNodesOverride[node.id]) {
-      nodeReadouts[node.id] = liveNodesOverride[node.id];
+    const overrideNode = liveNodesOverride?.[node.id];
+    if (overrideNode) {
+      nodeReadouts[node.id] = overrideNode;
       continue;
     }
 
@@ -504,7 +506,7 @@ export function buildReactiveSystemState(
       ).toFixed(2)
     );
 
-    const trueTrajectory = Math.round(
+    const syntheticTrajectory = Math.round(
       Math.max(
         42,
         Math.min(
@@ -516,6 +518,15 @@ export function buildReactiveSystemState(
         )
       )
     );
+
+    const csvHistIdx = step + 47;
+    const trueTrajectory =
+      step <= 0 &&
+      observedSeriesOverride &&
+      observedSeriesOverride.length > 0 &&
+      observedSeriesOverride[csvHistIdx % observedSeriesOverride.length] !== undefined
+        ? observedSeriesOverride[csvHistIdx % observedSeriesOverride.length]
+        : syntheticTrajectory;
 
     // 24h CPCB Moving Average lags behind rapid nocturnal spikes
     const cpcbMovingAvg24h = Math.round(trueTrajectory * 0.72 + 42 * Math.cos((step - 9) * 0.18));
@@ -864,115 +875,262 @@ export interface ParsedCsvTelemetrySummary {
   meanPm25: number;
   maxPm25: number;
   meanAod: number;
+  extractedPerturbation: Partial<PerturbationState>;
+  extractedNodes: Partial<Record<CorridorNodeId, NodeLiveTelemetry>>;
+  observedSeriesPm25: number[];
 }
 
 /**
- * Client-Side CSV Parser (`FileReader` helper) supporting up to 5,000 matching corridor rows
- * for `INDIA_AQI_COMPLETE_20251126.csv`, `aqi_india_38cols_knn_final.csv`, or Option 1 CSVs.
+ * Client-Side CSV Parser (`FileReader` & `fetch` helper) supporting 300,000+ row files
+ * (`INDIA_AQI_COMPLETE_20251126.csv` and `aqi_india_38cols_knn_final.csv`) using a fast
+ * newline cursor loop without allocating massive full-file line arrays.
  */
 export function parseCorridorCsvText(
   csvText: string,
   fileName: string
 ): ParsedCsvTelemetrySummary {
-  const lines = csvText.split(/\r?\n/).filter((l) => l.trim().length > 0);
-  if (lines.length < 2) {
-    throw new Error('CSV file must contain a header row and at least one data row.');
+  const len = csvText.length;
+  if (len === 0) {
+    throw new Error('CSV file is empty.');
   }
 
-  const rawHeaders = lines[0].split(',').map((h) => h.trim().replace(/^"|"$/g, ''));
-  const maxRows = Math.min(lines.length - 1, 5000);
+  // Extract header line
+  let firstNl = csvText.indexOf('\n');
+  if (firstNl === -1) {
+    throw new Error('CSV file must contain a header row and at least one data row.');
+  }
+  const headerLine = csvText.slice(0, firstNl).replace(/\r$/, '').trim();
+  if (headerLine.toLowerCase().includes('<!doctype html') || headerLine.toLowerCase().includes('<html')) {
+    throw new Error('Not a valid CSV file.');
+  }
 
+  const rawHeaders = headerLine.split(',').map((h) => h.trim().replace(/^"|"$/g, ''));
   const missingCounter: Record<string, number> = {};
   for (const h of rawHeaders) {
     missingCounter[h] = 0;
   }
 
-  const cityColIdx = rawHeaders.findIndex((h) =>
-    /^(city|station|location|site)$/i.test(h)
-  );
-  const pm25ColIdx = rawHeaders.findIndex((h) =>
-    /pm2_?5|pm2\.5/i.test(h)
-  );
-  const aodColIdx = rawHeaders.findIndex((h) =>
-    /^aod|aerosol_optical_depth/i.test(h)
-  );
+  const findCol = (pattern: RegExp) => rawHeaders.findIndex((h) => pattern.test(h));
+
+  const cityColIdx = findCol(/^(city|station|location|site)$/i);
+  const dtColIdx = findCol(/datetime|date|timestamp|time/i);
+  const pm25ColIdx = findCol(/^pm2_?5|pm2\.5/i);
+  const pm10ColIdx = findCol(/^pm10/i);
+  const aodColIdx = findCol(/^aod|aerosol_optical_depth/i);
+  const dustColIdx = findCol(/^dust/i);
+  const coColIdx = findCol(/^co(_ugm3)?$|^carbon_monoxide/i);
+  const no2ColIdx = findCol(/^no2(_ugm3)?$|^nitrogen_dioxide/i);
+  const so2ColIdx = findCol(/^so2(_ugm3)?$|^sulphur_dioxide/i);
+  const o3ColIdx = findCol(/^o3(_ugm3)?$|^ozone/i);
+  const tempColIdx = findCol(/^temp|temperature_2m/i);
+  const rhColIdx = findCol(/^humidity|relative_humidity/i);
+  const wsColIdx = findCol(/^wind_speed/i);
+  const wdColIdx = findCol(/^wind_dir|wind_direction/i);
+  const presColIdx = findCol(/^pressure|surface_pressure/i);
+  const solarColIdx = findCol(/^solar|shortwave_radiation/i);
+  const cropColIdx = findCol(/crop_burning/i);
+  const festColIdx = findCol(/festival/i);
 
   const rows: Array<Record<string, string | number>> = [];
+  const fallbackRows: Array<Record<string, string | number>> = [];
+  let totalRowsScanned = 0;
+  let corridorRowsMatched = 0;
   let sumPm25 = 0;
   let countPm25 = 0;
   let maxPm25 = 0;
   let sumAod = 0;
   let countAod = 0;
 
-  for (let i = 1; i < lines.length && rows.length < 5000; i++) {
-    const cells = lines[i].split(',').map((c) => c.trim().replace(/^"|"$/g, ''));
+  const observedSeriesPm25: number[] = [];
+  const latestByNode: Partial<Record<CorridorNodeId, NodeLiveTelemetry>> = {};
+  let lastMatchedCells: string[] = [];
+
+  const numOr = (cells: string[], idx: number, fallback: number): number => {
+    if (idx < 0 || idx >= cells.length) return fallback;
+    const v = Number(cells[idx]);
+    return !Number.isNaN(v) && cells[idx] !== '' ? v : fallback;
+  };
+
+  const corridorQuickRegex =
+    /delhi|ncr|noida|gurugram|chandigarh|ludhiana|amritsar|punjab|karnal|ambala|panipat|haryana|lucknow|kanpur/i;
+
+  let cursor = firstNl + 1;
+  while (cursor < len) {
+    let nextNl = csvText.indexOf('\n', cursor);
+    if (nextNl === -1) nextNl = len;
+
+    const rawLine = csvText.slice(cursor, nextNl).replace(/\r$/, '');
+    cursor = nextNl + 1;
+
+    if (rawLine.length < 3) continue;
+    totalRowsScanned++;
+
+    // Fast pre-filter when a City column exists and we already have fallback rows
+    const likelyCorridorRow = cityColIdx < 0 || corridorQuickRegex.test(rawLine);
+    if (!likelyCorridorRow && fallbackRows.length >= 100) {
+      continue;
+    }
+
+    const cells = rawLine.split(',').map((c) => c.trim().replace(/^"|"$/g, ''));
     if (cells.length < Math.min(4, rawHeaders.length)) continue;
 
-    // If a City column exists, prioritize IGP corridor cities if present, or accept all if none match
-    if (cityColIdx >= 0 && i < 25000) {
+    let matchedNodeId: CorridorNodeId | null = null;
+    if (cityColIdx >= 0) {
       const cityVal = (cells[cityColIdx] || '').toLowerCase();
-      const isIgp =
-        cityVal.includes('delhi') ||
-        cityVal.includes('chandigarh') ||
-        cityVal.includes('ludhiana') ||
+      if (cityVal.includes('ludhiana') || cityVal.includes('amritsar') || cityVal.includes('punjab')) {
+        matchedNodeId = 'ludhiana';
+      } else if (cityVal.includes('chandigarh')) {
+        matchedNodeId = 'chandigarh';
+      } else if (
         cityVal.includes('karnal') ||
-        cityVal.includes('lucknow') ||
-        cityVal.includes('ncr');
-      // Only filter if the dataset actually contains IGP city names
-      if (!isIgp && rows.length > 0 && i < 5000) {
-        continue;
+        cityVal.includes('ambala') ||
+        cityVal.includes('panipat') ||
+        cityVal.includes('haryana')
+      ) {
+        matchedNodeId = 'karnal';
+      } else if (
+        cityVal.includes('delhi') ||
+        cityVal.includes('ncr') ||
+        cityVal.includes('noida') ||
+        cityVal.includes('gurugram')
+      ) {
+        matchedNodeId = 'delhi';
+      } else if (cityVal.includes('lucknow') || cityVal.includes('kanpur')) {
+        matchedNodeId = 'lucknow';
+      }
+    } else {
+      matchedNodeId = 'delhi';
+    }
+
+    if (!matchedNodeId) {
+      if (fallbackRows.length < 100) {
+        const fbObj: Record<string, string | number> = {};
+        for (let c = 0; c < rawHeaders.length; c++) {
+          const colName = rawHeaders[c];
+          const rawVal = cells[c] ?? '';
+          const num = Number(rawVal);
+          fbObj[colName] = !Number.isNaN(num) && rawVal !== '' ? num : rawVal || '—';
+        }
+        fallbackRows.push(fbObj);
+      }
+      continue;
+    }
+
+    corridorRowsMatched++;
+    lastMatchedCells = cells;
+
+    // Collect up to 5,000 matched corridor rows for the UI table & missingness audit
+    if (rows.length < 5000) {
+      const rowObj: Record<string, string | number> = {};
+      for (let c = 0; c < rawHeaders.length; c++) {
+        const colName = rawHeaders[c];
+        const rawVal = cells[c] ?? '';
+        if (rawVal === '' || rawVal.toLowerCase() === 'nan' || rawVal.toLowerCase() === 'null') {
+          missingCounter[colName] = (missingCounter[colName] || 0) + 1;
+          rowObj[colName] = '—';
+        } else {
+          const num = Number(rawVal);
+          rowObj[colName] = !Number.isNaN(num) && rawVal !== '' ? num : rawVal;
+        }
+      }
+      rows.push(rowObj);
+    }
+
+    const rowPm25 = numOr(cells, pm25ColIdx, -1);
+    if (rowPm25 > 0) {
+      sumPm25 += rowPm25;
+      countPm25++;
+      if (rowPm25 > maxPm25) maxPm25 = rowPm25;
+      if (matchedNodeId === 'delhi' || cityColIdx < 0) {
+        observedSeriesPm25.push(Math.round(rowPm25));
+        if (observedSeriesPm25.length > 96) {
+          observedSeriesPm25.shift();
+        }
       }
     }
 
-    const rowObj: Record<string, string | number> = {};
-    for (let c = 0; c < rawHeaders.length; c++) {
-      const colName = rawHeaders[c];
-      const rawVal = cells[c] ?? '';
-      if (rawVal === '' || rawVal.toLowerCase() === 'nan' || rawVal.toLowerCase() === 'null') {
-        missingCounter[colName] = (missingCounter[colName] || 0) + 1;
-        rowObj[colName] = '—';
-      } else {
-        const num = Number(rawVal);
-        rowObj[colName] = !Number.isNaN(num) && rawVal !== '' ? num : rawVal;
-      }
+    const rowAod = numOr(cells, aodColIdx, -1);
+    if (rowAod > 0) {
+      sumAod += rowAod;
+      countAod++;
     }
 
-    if (pm25ColIdx >= 0) {
-      const val = Number(cells[pm25ColIdx]);
-      if (!Number.isNaN(val) && val > 0) {
-        sumPm25 += val;
-        countPm25++;
-        if (val > maxPm25) maxPm25 = val;
-      }
+    if (rowPm25 > 0) {
+      const pm10Val = Math.round(numOr(cells, pm10ColIdx, rowPm25 / 0.72));
+      latestByNode[matchedNodeId] = {
+        nodeId: matchedNodeId,
+        pm25: Math.round(rowPm25),
+        pm10: Math.max(Math.round(rowPm25), pm10Val),
+        pmRatio: Number((rowPm25 / Math.max(1, pm10Val)).toFixed(2)),
+        aod: Number(numOr(cells, aodColIdx, 1.48).toFixed(2)),
+        dust: Math.round(numOr(cells, dustColIdx, 34)),
+        co: Math.round(numOr(cells, coColIdx, 2100)),
+        no2: Math.round(numOr(cells, no2ColIdx, 96)),
+        so2: Math.round(numOr(cells, so2ColIdx, 18)),
+        o3: Math.round(numOr(cells, o3ColIdx, 24)),
+        tempC: Number(numOr(cells, tempColIdx, 15.8).toFixed(1)),
+        humidityPct: Math.round(numOr(cells, rhColIdx, 82)),
+        windSpeedKmh: Number(numOr(cells, wsColIdx, 3.6).toFixed(1)),
+        windDirDeg: Math.round(numOr(cells, wdColIdx, 314)),
+        pressureHpa: Number(numOr(cells, presColIdx, 1016.0).toFixed(1)),
+        solarRadWm2: Math.round(numOr(cells, solarColIdx, 0)),
+        updatedAtIst:
+          dtColIdx >= 0 && cells[dtColIdx]
+            ? `${cells[dtColIdx]} (CSV)`
+            : `${fileName}`,
+      };
     }
-    if (aodColIdx >= 0) {
-      const val = Number(cells[aodColIdx]);
-      if (!Number.isNaN(val) && val > 0) {
-        sumAod += val;
-        countAod++;
-      }
-    }
-
-    rows.push(rowObj);
   }
 
-  const scannedCount = Math.max(1, rows.length);
+  const finalRows = rows.length > 0 ? rows : fallbackRows;
+  const scannedCount = Math.max(1, finalRows.length);
   const missingnessAudit = rawHeaders.slice(0, 14).map((col) => ({
     column: col,
     missingCount: missingCounter[col] || 0,
     missingPct: Number((((missingCounter[col] || 0) / scannedCount) * 100).toFixed(2)),
   }));
 
+  const meanPm25Final = countPm25 > 0 ? Number((sumPm25 / countPm25).toFixed(1)) : 218.4;
+  const maxPm25Final = countPm25 > 0 ? Number(maxPm25.toFixed(1)) : 492.0;
+  const meanAodFinal = countAod > 0 ? Number((sumAod / countAod).toFixed(2)) : 1.48;
+
+  const refTelemetry =
+    latestByNode.delhi ||
+    latestByNode.chandigarh ||
+    latestByNode.ludhiana ||
+    Object.values(latestByNode)[0];
+  const upwindTelemetry =
+    latestByNode.ludhiana || latestByNode.chandigarh || refTelemetry;
+
+  const extractedPerturbation: Partial<PerturbationState> = {
+    upwindPm25: Math.min(550, Math.max(30, upwindTelemetry?.pm25 ?? Math.round(meanPm25Final * 1.15))),
+    aod: Math.min(3.2, Math.max(0.1, refTelemetry?.aod ?? meanAodFinal)),
+    windSpeedKmh: Math.min(30, Math.max(0.5, refTelemetry?.windSpeedKmh ?? 3.6)),
+    windDirDeg: Math.min(360, Math.max(0, refTelemetry?.windDirDeg ?? 314)),
+    solarRadiationWm2: Math.min(750, Math.max(0, refTelemetry?.solarRadWm2 ?? 0)),
+    temp2mC: Math.min(40, Math.max(4, refTelemetry?.tempC ?? 15.6)),
+    humidityPct: Math.min(98, Math.max(15, refTelemetry?.humidityPct ?? 84)),
+    pressureHpa: refTelemetry?.pressureHpa ?? 1016.2,
+    dustUgm3: Math.min(380, Math.max(10, refTelemetry?.dust ?? 34)),
+    coUgm3: refTelemetry?.co ?? 2450,
+    no2Ugm3: refTelemetry?.no2 ?? 110,
+    cropBurningSeason: cropColIdx >= 0 ? numOr(lastMatchedCells, cropColIdx, 1) >= 1 : true,
+    festivalPeriod: festColIdx >= 0 ? numOr(lastMatchedCells, festColIdx, 0) >= 1 : false,
+  };
+
   return {
     fileName,
-    totalRowsScanned: Math.min(lines.length - 1, maxRows),
-    corridorRowsMatched: rows.length,
+    totalRowsScanned,
+    corridorRowsMatched: corridorRowsMatched > 0 ? corridorRowsMatched : finalRows.length,
     detectedColumns: rawHeaders,
     missingnessAudit,
-    rows,
-    meanPm25: countPm25 > 0 ? Number((sumPm25 / countPm25).toFixed(1)) : 218.4,
-    maxPm25: countPm25 > 0 ? Number(maxPm25.toFixed(1)) : 492.0,
-    meanAod: countAod > 0 ? Number((sumAod / countAod).toFixed(2)) : 1.48,
+    rows: finalRows,
+    meanPm25: meanPm25Final,
+    maxPm25: maxPm25Final,
+    meanAod: meanAodFinal,
+    extractedPerturbation,
+    extractedNodes: latestByNode,
+    observedSeriesPm25: observedSeriesPm25.slice(-48),
   };
 }
 

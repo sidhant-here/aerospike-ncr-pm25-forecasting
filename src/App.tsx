@@ -1,9 +1,10 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Download,
   RefreshCw,
   FileSpreadsheet,
   AlertTriangle,
+  Upload,
 } from 'lucide-react';
 import {
   IGP_CORRIDOR_NODES,
@@ -15,6 +16,7 @@ import {
   EPISODE_PRESETS,
   buildReactiveSystemState,
   fetchLiveOpenMeteoCorridor,
+  parseCorridorCsvText,
   getCpcbSeverity,
 } from './utils/corridorTelemetryEngine';
 import { generateIgpCorridorSimulation } from './utils/igpPhysicsEngine';
@@ -30,6 +32,7 @@ export function App() {
   const [activeView, setActiveView] = useState<WorkspaceViewId>('view1-console');
   const [streamMode, setStreamMode] = useState<EpisodeStreamMode>('nov-2024-stubble');
   const [selectedNodeId, setSelectedNodeId] = useState<CorridorNodeId>('delhi');
+  const topCsvInputRef = useRef<HTMLInputElement | null>(null);
 
   // Perturbation state initialized to Nov 2024 Stubble-Burning Episode
   const [perturbation, setPerturbation] = useState<PerturbationState>(
@@ -45,12 +48,89 @@ export function App() {
   const [isLoadingLiveApi, setIsLoadingLiveApi] = useState<boolean>(false);
   const [liveApiError, setLiveApiError] = useState<string | null>(null);
 
-  // Local CSV Parser state
+  // Local CSV Parser state & /public multi-CSV catalog
   const [parsedCsv, setParsedCsv] = useState<ParsedCsvTelemetrySummary | null>(null);
+  const [publicCsvCatalog, setPublicCsvCatalog] = useState<
+    Record<string, ParsedCsvTelemetrySummary>
+  >({});
 
   const handleUpdatePerturbation = (patch: Partial<PerturbationState>) => {
     setPerturbation((prev) => ({ ...prev, ...patch }));
   };
+
+  // Sync perturbation and node telemetry when a real CSV is loaded
+  const handleCsvLoaded = (summary: ParsedCsvTelemetrySummary) => {
+    setParsedCsv(summary);
+    setPublicCsvCatalog((prev) => ({ ...prev, [summary.fileName]: summary }));
+    setStreamMode('local-csv-stream');
+    setPerturbation((prev) => ({
+      ...prev,
+      ...summary.extractedPerturbation,
+    }));
+  };
+
+  // Handle top-bar direct CSV file selection
+  const handleTopCsvFileUpload = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const text = String(ev.target?.result || '');
+        const summary = parseCorridorCsvText(text, file.name);
+        handleCsvLoaded(summary);
+      } catch (err) {
+        setLiveApiError(err instanceof Error ? err.message : 'Failed to parse CSV file.');
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  // Auto-detect both INDIA_AQI_COMPLETE_20251126.csv and aqi_india_38cols_knn_final.csv in /public
+  useEffect(() => {
+    let cancelled = false;
+    const candidateFiles = [
+      'INDIA_AQI_COMPLETE_20251126.csv',
+      'aqi_india_38cols_knn_final.csv',
+    ];
+
+    (async () => {
+      const detected: Record<string, ParsedCsvTelemetrySummary> = {};
+      let firstLoaded: ParsedCsvTelemetrySummary | null = null;
+
+      for (const fileName of candidateFiles) {
+        try {
+          const res = await fetch(`/${fileName}`);
+          if (!res.ok) continue;
+          const contentType = res.headers.get('content-type') || '';
+          if (contentType.includes('text/html')) continue;
+          const text = await res.text();
+          if (cancelled || !text || text.trim().startsWith('<!doctype html')) continue;
+          const summary = parseCorridorCsvText(text, fileName);
+          if (!cancelled && summary.corridorRowsMatched > 0) {
+            detected[fileName] = summary;
+            if (!firstLoaded) {
+              firstLoaded = summary;
+            }
+          }
+        } catch {
+          // Ignore if file is not placed in /public yet
+        }
+      }
+
+      if (!cancelled && firstLoaded) {
+        setPublicCsvCatalog((prev) => ({ ...prev, ...detected }));
+        setParsedCsv(firstLoaded);
+        setStreamMode('local-csv-stream');
+        setPerturbation((prev) => ({
+          ...prev,
+          ...firstLoaded!.extractedPerturbation,
+        }));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSwitchStreamMode = async (mode: EpisodeStreamMode) => {
     setStreamMode(mode);
@@ -58,6 +138,14 @@ export function App() {
 
     if (mode === 'nov-2024-stubble' || mode === 'dec-2024-inversion') {
       setPerturbation(EPISODE_PRESETS[mode].perturbation);
+      return;
+    }
+
+    if (mode === 'local-csv-stream' && parsedCsv) {
+      setPerturbation((prev) => ({
+        ...prev,
+        ...parsedCsv.extractedPerturbation,
+      }));
       return;
     }
 
@@ -94,21 +182,16 @@ export function App() {
     }
   };
 
-  // Sync perturbation when a local CSV is loaded
-  const handleCsvLoaded = (summary: ParsedCsvTelemetrySummary) => {
-    setParsedCsv(summary);
-    setStreamMode('local-csv-stream');
-    setPerturbation((prev) => ({
-      ...prev,
-      upwindPm25: Math.round(summary.meanPm25 * 1.15),
-      aod: summary.meanAod,
-    }));
-  };
-
-  // Re-sync perturbation if user clicks another corridor node while in Live Open-Meteo mode
+  // Re-sync perturbation if user clicks another corridor node while in Live Open-Meteo or CSV mode
   useEffect(() => {
-    if (streamMode === 'live-open-meteo' && liveNodesData) {
-      const target = liveNodesData[selectedNodeId];
+    const activeOverrides =
+      streamMode === 'live-open-meteo'
+        ? liveNodesData
+        : streamMode === 'local-csv-stream'
+        ? parsedCsv?.extractedNodes
+        : null;
+    if (activeOverrides) {
+      const target = activeOverrides[selectedNodeId];
       if (target) {
         setPerturbation((prev) => ({
           ...prev,
@@ -125,19 +208,27 @@ export function App() {
         }));
       }
     }
-  }, [selectedNodeId, streamMode, liveNodesData]);
+  }, [selectedNodeId, streamMode, liveNodesData, parsedCsv]);
 
   // Core Reactive Physics & Conformal State
-  const reactiveState = useMemo(
-    () =>
-      buildReactiveSystemState(
-        perturbation,
-        selectedNodeId,
-        costRatioK,
-        streamMode === 'live-open-meteo' ? liveNodesData : null
-      ),
-    [perturbation, selectedNodeId, costRatioK, streamMode, liveNodesData]
-  );
+  const reactiveState = useMemo(() => {
+    const nodeOverrides =
+      streamMode === 'live-open-meteo'
+        ? liveNodesData
+        : streamMode === 'local-csv-stream'
+        ? parsedCsv?.extractedNodes
+        : null;
+    const seriesOverride =
+      streamMode === 'local-csv-stream' ? parsedCsv?.observedSeriesPm25 : null;
+
+    return buildReactiveSystemState(
+      perturbation,
+      selectedNodeId,
+      costRatioK,
+      nodeOverrides,
+      seriesOverride
+    );
+  }, [perturbation, selectedNodeId, costRatioK, streamMode, liveNodesData, parsedCsv]);
 
   // Benchmark & Ablation Tables from igpPhysicsEngine
   const benchmarkSim = useMemo(
@@ -251,7 +342,7 @@ export function App() {
           aria-label="Stream Source and Corridor Node Selector"
           className="flex flex-wrap items-center justify-between gap-4 p-4 bg-[#FAF9F5] border border-[#1C1C1C] rounded-none shadow-none"
         >
-          {/* Left: Episode / Data Stream Selector */}
+          {/* Left: Episode / Data Stream Selector + Direct CSV Upload Button */}
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-xs font-mono font-bold uppercase tracking-wider text-[#111111] whitespace-nowrap">
               STREAM SOURCE //
@@ -273,9 +364,31 @@ export function App() {
                 Live Open-Meteo REST API Stream (Keyless Real-Time Corridor)
               </option>
               <option value="local-csv-stream">
-                Local CSV File Stream (Browser FileReader Engine)
+                {parsedCsv
+                  ? `Local CSV Active: ${parsedCsv.fileName} (${parsedCsv.corridorRowsMatched} rows)`
+                  : 'Local CSV File Stream (Browser FileReader Engine)'}
               </option>
             </select>
+
+            <button
+              type="button"
+              onClick={() => topCsvInputRef.current?.click()}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-mono font-semibold bg-[#15803D] hover:bg-[#111111] text-[#FAF9F5] border border-[#1C1C1C] rounded-none cursor-pointer transition-colors whitespace-nowrap"
+              title="Upload INDIA_AQI_COMPLETE_20251126.csv or aqi_india_38cols_knn_final.csv"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              <span>{parsedCsv ? `CSV LOADED (${parsedCsv.corridorRowsMatched} ROWS)` : 'UPLOAD CSV DATASET'}</span>
+            </button>
+            <input
+              ref={topCsvInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) handleTopCsvFileUpload(file);
+              }}
+            />
 
             {streamMode === 'live-open-meteo' && (
               <button
@@ -290,18 +403,32 @@ export function App() {
               </button>
             )}
 
+            {Object.keys(publicCsvCatalog).length > 1 && (
+              <select
+                aria-label="Switch Active CSV File"
+                value={parsedCsv?.fileName || ''}
+                onChange={(e) => {
+                  const chosen = publicCsvCatalog[e.target.value];
+                  if (chosen) handleCsvLoaded(chosen);
+                }}
+                className="bg-[#FAF9F5] border border-[#1C1C1C] text-xs font-mono font-bold text-[#15803D] px-3 py-1.5 rounded-none focus:outline-none cursor-pointer"
+              >
+                {Object.values(publicCsvCatalog).map((item) => (
+                  <option key={item.fileName} value={item.fileName}>
+                    CSV: {item.fileName} ({item.corridorRowsMatched} rows)
+                  </option>
+                ))}
+              </select>
+            )}
+
             {streamMode === 'local-csv-stream' && (
               <button
                 type="button"
                 onClick={() => setActiveView('view2-physics')}
-                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-mono font-semibold bg-[#F4F3EE] text-[#15803D] border border-[#1C1C1C] rounded-none cursor-pointer whitespace-nowrap"
+                className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-mono font-semibold bg-[#F4F3EE] text-[#111111] border border-[#1C1C1C] rounded-none cursor-pointer whitespace-nowrap"
               >
                 <FileSpreadsheet className="w-3.5 h-3.5" />
-                <span>
-                  {parsedCsv
-                    ? `${parsedCsv.fileName} (${parsedCsv.corridorRowsMatched} rows)`
-                    : 'OPEN CSV INSPECTOR (§ 2.0)'}
-                </span>
+                <span>INSPECT CSV TABLE (§ 2.0)</span>
               </button>
             )}
 
