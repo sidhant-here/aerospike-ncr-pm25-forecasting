@@ -15,7 +15,7 @@ import {
   Legend,
   ReferenceArea,
 } from 'recharts';
-import { Upload, FileSpreadsheet, AlertCircle } from 'lucide-react';
+import { Upload, FileSpreadsheet, AlertCircle, Download, Copy, Check } from 'lucide-react';
 import {
   PerturbationState,
   NodeLiveTelemetry,
@@ -26,6 +26,14 @@ import {
   parseCorridorCsvText,
   generateSampleCorridorCsvString,
 } from '../utils/corridorTelemetryEngine';
+import {
+  EDA_PIPELINE_STAGES,
+  EDA_IMPUTATION_AUDIT_ROWS,
+  EDA_CORRIDOR_LAG_CORRELATIONS,
+  EDA_PREPROCESSING_NOTEBOOK_CELLS,
+  EDA_LATEX_TABLES,
+  buildEdaIpynbJsonString,
+} from '../data/edaPreprocessingNotebookData';
 
 interface View2PhysicsDiagnosticsLabProps {
   perturbation: PerturbationState;
@@ -35,6 +43,7 @@ interface View2PhysicsDiagnosticsLabProps {
   smokeDustScatter: SmokeDustScatterPoint[];
   parsedCsv: ParsedCsvTelemetrySummary | null;
   onCsvLoaded: (summary: ParsedCsvTelemetrySummary) => void;
+  onDownloadEdaNotebook?: () => void;
 }
 
 export const View2PhysicsDiagnosticsLab: React.FC<View2PhysicsDiagnosticsLabProps> = ({
@@ -45,10 +54,36 @@ export const View2PhysicsDiagnosticsLab: React.FC<View2PhysicsDiagnosticsLabProp
   smokeDustScatter,
   parsedCsv,
   onCsvLoaded,
+  onDownloadEdaNotebook,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [csvError, setCsvError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [edaSubTab, setEdaSubTab] = useState<'tables-pipeline' | 'notebook-cells' | 'latex-eda'>(
+    'tables-pipeline'
+  );
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const handleCopyText = (id: string, text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => setCopiedId(null), 1800);
+  };
+
+  const handleTriggerEdaDownload = () => {
+    if (onDownloadEdaNotebook) {
+      onDownloadEdaNotebook();
+      return;
+    }
+    const jsonStr = buildEdaIpynbJsonString();
+    const blob = new Blob([jsonStr], { type: 'application/x-ipynb+json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'igp_eda_preprocessing_ieee.ipynb';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const winterSmokePoints = smokeDustScatter.filter(
     (d) => d.regime === 'Winter Pyrogenic Smoke'
@@ -655,6 +690,329 @@ export const View2PhysicsDiagnosticsLab: React.FC<View2PhysicsDiagnosticsLabProp
           )}
         </div>
       </div>
+
+      {/* § 2.3 PREPROCESSING & EXPLORATORY DATA ANALYSIS (EDA) PIPELINE & NOTEBOOK INSPECTOR */}
+      <section
+        aria-label="Preprocessing and Exploratory Data Analysis Notebook Inspector"
+        className="bg-[#FAF9F5] border border-[#1C1C1C] rounded-none shadow-none"
+      >
+        <div className="bg-[#EAE8E0] p-6 border-b border-[#1C1C1C] flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h2 className="text-base font-serif font-bold tracking-tight text-[#111111]">
+              § 2.3 Companion Preprocessing & Exploratory Data Analysis (EDA) Notebook Inspector (
+              <span className="font-mono text-sm">igp_eda_preprocessing_ieee.ipynb</span>)
+            </h2>
+            <p className="text-xs text-stone-600 font-mono mt-1">
+              End-to-End Raw-to-Clean Pipeline: INDIA_AQI_COMPLETE_20251126.csv (21 cols) → Physical
+              Bounds & Hybrid KNN Imputation → 38-Column Physics Feature Matrix (
+              aqi_india_38cols_knn_final.csv)
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            <div className="flex items-center border border-[#1C1C1C] bg-[#FAF9F5]">
+              <button
+                type="button"
+                onClick={() => setEdaSubTab('tables-pipeline')}
+                className={`px-3.5 py-2 text-xs font-mono uppercase cursor-pointer transition-colors whitespace-nowrap ${
+                  edaSubTab === 'tables-pipeline'
+                    ? 'bg-[#111111] text-[#FAF9F5] font-bold'
+                    : 'text-[#111111] hover:bg-[#EAE8E0]'
+                }`}
+              >
+                01. Pipeline & Imputation Audit
+              </button>
+              <button
+                type="button"
+                onClick={() => setEdaSubTab('notebook-cells')}
+                className={`px-3.5 py-2 text-xs font-mono uppercase border-l border-[#1C1C1C] cursor-pointer transition-colors whitespace-nowrap ${
+                  edaSubTab === 'notebook-cells'
+                    ? 'bg-[#111111] text-[#FAF9F5] font-bold'
+                    : 'text-[#111111] hover:bg-[#EAE8E0]'
+                }`}
+              >
+                02. Inspect 13 EDA Notebook Cells
+              </button>
+              <button
+                type="button"
+                onClick={() => setEdaSubTab('latex-eda')}
+                className={`px-3.5 py-2 text-xs font-mono uppercase border-l border-[#1C1C1C] cursor-pointer transition-colors whitespace-nowrap ${
+                  edaSubTab === 'latex-eda'
+                    ? 'bg-[#111111] text-[#FAF9F5] font-bold'
+                    : 'text-[#111111] hover:bg-[#EAE8E0]'
+                }`}
+              >
+                03. EDA LaTeX Manuscript Tables
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleTriggerEdaDownload}
+              className="inline-flex items-center gap-2 px-4 py-2 text-xs font-mono font-bold bg-[#15803D] hover:bg-[#111111] text-[#FAF9F5] border border-[#1C1C1C] rounded-none cursor-pointer transition-colors whitespace-nowrap"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>DOWNLOAD EDA .IPYNB</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="p-6 space-y-6">
+          {/* 5-Stage Raw-to-38-Col Pipeline Strip */}
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+            {EDA_PIPELINE_STAGES.map((st) => (
+              <div
+                key={st.stageNumber}
+                className="p-4 bg-[#F4F3EE] border border-[#1C1C1C] flex flex-col justify-between gap-2"
+              >
+                <div>
+                  <div className="flex items-center justify-between gap-2 text-[11px] font-mono text-[#B91C1C] font-bold uppercase">
+                    <span>{st.stageNumber}</span>
+                    <span className="text-stone-600">{st.outputShape}</span>
+                  </div>
+                  <div className="text-sm font-serif font-bold text-[#111111] mt-1">
+                    {st.title}
+                  </div>
+                  <p className="text-xs text-stone-700 mt-1 leading-relaxed">{st.keyMethod}</p>
+                </div>
+                <div className="pt-2 border-t border-[#D4D2C8] text-[11px] font-mono text-[#15803D] font-semibold">
+                  {st.keyMetric}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {edaSubTab === 'tables-pipeline' && (
+            <div className="space-y-6">
+              {/* Table E1: Sensor Missingness, Physical Bounds & Before/After KNN Imputation Verification */}
+              <div className="border border-[#1C1C1C] bg-[#FAF9F5]">
+                <div className="bg-[#EAE8E0] px-5 py-3.5 border-b border-[#1C1C1C] flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-serif font-bold text-[#111111]">
+                      Table E1: Sensor Missingness Audit, Hardware Bounds Screening & Two-Stage
+                      Hybrid KNN Imputation Verification
+                    </h3>
+                    <p className="text-xs font-mono text-stone-600">
+                      Two-sample Kolmogorov-Smirnov (KS) test confirms non-significant distribution
+                      drift (p &gt; 0.88) and Augmented Dickey-Fuller (ADF) confirms stationarity
+                      (p &lt; 1e-12)
+                    </p>
+                  </div>
+                  <span className="text-xs font-mono font-bold text-[#15803D]">
+                    POST-IMPUTATION NULLS: 0 / 60,000 ROWS
+                  </span>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse font-mono text-xs tabular-nums">
+                    <thead className="bg-[#F4F3EE] border-b border-[#1C1C1C]">
+                      <tr className="divide-x divide-[#D4D2C8]">
+                        <th className="py-2.5 px-3.5 font-bold text-[#111111]">Variable</th>
+                        <th className="py-2.5 px-3.5 font-bold text-[#111111]">Raw Missing</th>
+                        <th className="py-2.5 px-3.5 font-bold text-[#111111]">Physical Bounds</th>
+                        <th className="py-2.5 px-3.5 font-bold text-[#111111]">Glitches Masked</th>
+                        <th className="py-2.5 px-3.5 font-bold text-[#111111]">Raw Mean ± SD</th>
+                        <th className="py-2.5 px-3.5 font-bold text-[#111111]">
+                          Imputed Mean ± SD
+                        </th>
+                        <th className="py-2.5 px-3.5 font-bold text-[#111111]">
+                          KS Invariance (D, p)
+                        </th>
+                        <th className="py-2.5 px-3.5 font-bold text-[#111111]">
+                          ADF Stationarity
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#D4D2C8]">
+                      {EDA_IMPUTATION_AUDIT_ROWS.map((row) => (
+                        <tr
+                          key={row.variable}
+                          className="divide-x divide-[#D4D2C8] hover:bg-[#EAE8E0]/50"
+                        >
+                          <td className="py-2 px-3.5 font-bold text-[#111111]">
+                            {row.variable}{' '}
+                            <span className="text-stone-500 font-normal">({row.unit})</span>
+                          </td>
+                          <td className="py-2 px-3.5 text-[#B91C1C] font-semibold">
+                            {row.rawMissingCount.toLocaleString()} ({row.rawMissingPct}%)
+                          </td>
+                          <td className="py-2 px-3.5 text-stone-700">{row.physicalBounds}</td>
+                          <td className="py-2 px-3.5 text-stone-700">{row.outliersCapped}</td>
+                          <td className="py-2 px-3.5 text-[#18181B]">{row.rawMeanStd}</td>
+                          <td className="py-2 px-3.5 text-[#1D4ED8] font-semibold">
+                            {row.imputedMeanStd}
+                          </td>
+                          <td className="py-2 px-3.5 text-[#15803D] font-semibold">
+                            {row.ksStatPVal}
+                          </td>
+                          <td className="py-2 px-3.5 text-[#18181B]">{row.adfStatPVal}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Table E2: Spatio-Temporal Cross-Corridor Lagged Correlation Matrix */}
+              <div className="border border-[#1C1C1C] bg-[#FAF9F5]">
+                <div className="bg-[#EAE8E0] px-5 py-3.5 border-b border-[#1C1C1C] flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="text-sm font-serif font-bold text-[#111111]">
+                      Table E2: Spatio-Temporal Cross-Corridor PM₂.₅ Lagged Pearson Correlation (0h
+                      to 24h Plume Transit Window)
+                    </h3>
+                    <p className="text-xs font-mono text-stone-600">
+                      Empirically validates the 6h–12h 315° NW-to-SE upwind advection lag features (
+                      Upwind_Chd_PM25_lag6h &amp; lag12h)
+                    </p>
+                  </div>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse font-mono text-xs tabular-nums">
+                    <thead className="bg-[#F4F3EE] border-b border-[#1C1C1C]">
+                      <tr className="divide-x divide-[#D4D2C8]">
+                        <th className="py-2.5 px-3.5 font-bold text-[#111111]">
+                          Upwind → Receptor Corridor Pair
+                        </th>
+                        <th className="py-2.5 px-3.5 font-bold text-[#111111]">Distance</th>
+                        <th className="py-2.5 px-3.5 font-bold text-[#111111]">Lag 0h</th>
+                        <th className="py-2.5 px-3.5 font-bold text-[#111111]">Lag +3h</th>
+                        <th className="py-2.5 px-3.5 font-bold text-[#111111]">Lag +6h</th>
+                        <th className="py-2.5 px-3.5 font-bold text-[#111111]">Lag +9h</th>
+                        <th className="py-2.5 px-3.5 font-bold text-[#111111]">Lag +12h</th>
+                        <th className="py-2.5 px-3.5 font-bold text-[#111111]">Lag +18h</th>
+                        <th className="py-2.5 px-3.5 font-bold text-[#111111]">Lag +24h</th>
+                        <th className="py-2.5 px-3.5 font-bold text-[#111111]">
+                          Physical Transit Peak
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#D4D2C8]">
+                      {EDA_CORRIDOR_LAG_CORRELATIONS.map((row) => (
+                        <tr
+                          key={row.upwindPair}
+                          className="divide-x divide-[#D4D2C8] hover:bg-[#EAE8E0]/50"
+                        >
+                          <td className="py-2.5 px-3.5 font-bold text-[#111111]">
+                            {row.upwindPair}
+                          </td>
+                          <td className="py-2.5 px-3.5 text-stone-700">{row.distanceKm} km</td>
+                          <td className="py-2.5 px-3.5">{row.rLag0h.toFixed(3)}</td>
+                          <td className="py-2.5 px-3.5">{row.rLag3h.toFixed(3)}</td>
+                          <td className="py-2.5 px-3.5 font-bold text-[#B91C1C]">
+                            {row.rLag6h.toFixed(3)}
+                          </td>
+                          <td className="py-2.5 px-3.5 font-bold text-[#B91C1C]">
+                            {row.rLag9h.toFixed(3)}
+                          </td>
+                          <td className="py-2.5 px-3.5 font-bold text-[#1D4ED8]">
+                            {row.rLag12h.toFixed(3)}
+                          </td>
+                          <td className="py-2.5 px-3.5">{row.rLag18h.toFixed(3)}</td>
+                          <td className="py-2.5 px-3.5">{row.rLag24h.toFixed(3)}</td>
+                          <td className="py-2.5 px-3.5 font-bold text-[#15803D]">
+                            {row.optimalLagHrs}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {edaSubTab === 'notebook-cells' && (
+            <div className="space-y-4">
+              {EDA_PREPROCESSING_NOTEBOOK_CELLS.map((cell, idx) => (
+                <div key={cell.id} className="border border-[#1C1C1C] bg-[#F4F3EE]">
+                  <div className="bg-[#EAE8E0] px-4 py-2.5 border-b border-[#1C1C1C] flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5 font-mono text-xs">
+                      <span className="font-bold text-[#B91C1C]">
+                        CELL {idx + 1} [{cell.cellType.toUpperCase()}]
+                      </span>
+                      <span>·</span>
+                      <span className="font-bold text-[#111111]">{cell.title}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleCopyText(cell.id, cell.content)}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-mono bg-[#FAF9F5] hover:bg-[#111111] hover:text-[#FAF9F5] text-[#111111] border border-[#1C1C1C] cursor-pointer transition-colors"
+                    >
+                      {copiedId === cell.id ? (
+                        <>
+                          <Check className="w-3 h-3 text-[#15803D]" />
+                          <span>COPIED CELL</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3 h-3" />
+                          <span>COPY CELL</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <pre className="p-4 text-xs font-mono text-[#111111] overflow-x-auto leading-relaxed bg-[#FAF9F5]">
+                    {cell.content}
+                  </pre>
+                  {cell.executionOutput && (
+                    <div className="border-t border-[#D4D2C8] bg-[#F4F3EE] p-4">
+                      <div className="text-[11px] font-mono uppercase text-[#15803D] font-bold mb-1">
+                        STDOUT EXECUTION TRACE //
+                      </div>
+                      <pre className="text-xs font-mono text-stone-800 overflow-x-auto leading-relaxed">
+                        {cell.executionOutput}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {edaSubTab === 'latex-eda' && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="border border-[#1C1C1C] bg-[#F4F3EE]">
+                <div className="bg-[#EAE8E0] px-4 py-3 border-b border-[#1C1C1C] flex items-center justify-between gap-2">
+                  <span className="text-xs font-mono font-bold text-[#111111]">
+                    table_eda_imputation_audit.tex (\label&#123;tab:eda_missingness_imputation&#125;)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      handleCopyText('latex-imp', EDA_LATEX_TABLES.imputationAuditTex)
+                    }
+                    className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-mono bg-[#FAF9F5] hover:bg-[#111111] hover:text-[#FAF9F5] text-[#111111] border border-[#1C1C1C] cursor-pointer"
+                  >
+                    {copiedId === 'latex-imp' ? 'COPIED LATEX' : 'COPY LATEX'}
+                  </button>
+                </div>
+                <pre className="p-4 text-xs font-mono text-[#111111] overflow-x-auto leading-relaxed bg-[#FAF9F5]">
+                  {EDA_LATEX_TABLES.imputationAuditTex}
+                </pre>
+              </div>
+
+              <div className="border border-[#1C1C1C] bg-[#F4F3EE]">
+                <div className="bg-[#EAE8E0] px-4 py-3 border-b border-[#1C1C1C] flex items-center justify-between gap-2">
+                  <span className="text-xs font-mono font-bold text-[#111111]">
+                    table_eda_corridor_lags.tex (\label&#123;tab:eda_stationarity_corridor_lags&#125;)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => handleCopyText('latex-lag', EDA_LATEX_TABLES.corridorLagTex)}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-mono bg-[#FAF9F5] hover:bg-[#111111] hover:text-[#FAF9F5] text-[#111111] border border-[#1C1C1C] cursor-pointer"
+                  >
+                    {copiedId === 'latex-lag' ? 'COPIED LATEX' : 'COPY LATEX'}
+                  </button>
+                </div>
+                <pre className="p-4 text-xs font-mono text-[#111111] overflow-x-auto leading-relaxed bg-[#FAF9F5]">
+                  {EDA_LATEX_TABLES.corridorLagTex}
+                </pre>
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
     </div>
   );
 };
+

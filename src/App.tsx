@@ -21,6 +21,7 @@ import {
 } from './utils/corridorTelemetryEngine';
 import { generateIgpCorridorSimulation } from './utils/igpPhysicsEngine';
 import { buildIpynbJsonString } from './data/jupyterNotebookData';
+import { buildEdaIpynbJsonString } from './data/edaPreprocessingNotebookData';
 import { View1CorridorConsole } from './components/View1CorridorConsole';
 import { View2PhysicsDiagnosticsLab } from './components/View2PhysicsDiagnosticsLab';
 import { View3BenchmarksAndLatex } from './components/View3BenchmarksAndLatex';
@@ -252,6 +253,17 @@ export function App() {
     URL.revokeObjectURL(url);
   };
 
+  const handleDownloadEdaNotebook = () => {
+    const jsonString = buildEdaIpynbJsonString();
+    const blob = new Blob([jsonString], { type: 'application/x-ipynb+json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'igp_eda_preprocessing_ieee.ipynb';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   // Numbered Academic Journal Section Tabs (No Decorative Icons)
   const navTabs: Array<{
     id: WorkspaceViewId;
@@ -295,16 +307,25 @@ export function App() {
               </h1>
             </div>
 
-            {/* Primary CTA (.ipynb Download) */}
-            <div className="flex items-center gap-2">
+            {/* Primary CTAs (EDA & Forecasting .ipynb Downloads) */}
+            <div className="flex flex-wrap items-center gap-2.5">
+              <button
+                type="button"
+                onClick={handleDownloadEdaNotebook}
+                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-mono font-bold bg-[#15803D] hover:bg-[#111111] text-[#FAF9F5] border border-[#1C1C1C] rounded-none shadow-none cursor-pointer transition-colors whitespace-nowrap"
+                title="Download standalone Preprocessing & Exploratory Data Analysis Jupyter Notebook (igp_eda_preprocessing_ieee.ipynb)"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>DOWNLOAD EDA .IPYNB</span>
+              </button>
               <button
                 type="button"
                 onClick={handleDownloadNotebook}
                 className="inline-flex items-center gap-2 px-4 py-2 text-xs font-mono font-bold bg-[#111111] hover:bg-[#B91C1C] text-[#FAF9F5] border border-[#1C1C1C] rounded-none shadow-none cursor-pointer transition-colors whitespace-nowrap"
-                title="Download standalone 572-line Jupyter Notebook (.ipynb)"
+                title="Download standalone Forecasting & Conformal Quantile Regression Jupyter Notebook (igp_cqr_pm25_forecasting_ieee.ipynb)"
               >
                 <Download className="w-3.5 h-3.5" />
-                <span>DOWNLOAD .IPYNB (572 LINES)</span>
+                <span>DOWNLOAD FORECAST .IPYNB</span>
               </button>
             </div>
           </div>
@@ -511,6 +532,7 @@ export function App() {
             smokeDustScatter={reactiveState.smokeDustScatter}
             parsedCsv={parsedCsv}
             onCsvLoaded={handleCsvLoaded}
+            onDownloadEdaNotebook={handleDownloadEdaNotebook}
           />
         )}
 

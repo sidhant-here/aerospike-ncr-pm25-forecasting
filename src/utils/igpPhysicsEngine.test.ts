@@ -150,4 +150,27 @@ test('Corridor Telemetry Engine computes exact 4 reactive physics equations, CPC
   assert.ok(parsedCsv.detectedColumns.includes('PM2_5_ugm3'));
 });
 
+test('EDA & Preprocessing Notebook generator produces valid nbformat v4.5 .ipynb JSON with 13 cells and 38-column pipeline', async () => {
+  const {
+    buildEdaIpynbJsonString,
+    EDA_PREPROCESSING_NOTEBOOK_CELLS,
+    EDA_PIPELINE_STAGES,
+    EDA_IMPUTATION_AUDIT_ROWS,
+  } = await import('../data/edaPreprocessingNotebookData');
+
+  assert.equal(EDA_PREPROCESSING_NOTEBOOK_CELLS.length, 13);
+  assert.equal(EDA_PIPELINE_STAGES.length, 5);
+  assert.ok(EDA_IMPUTATION_AUDIT_ROWS.length >= 8);
+
+  const jsonStr = buildEdaIpynbJsonString();
+  const parsed = JSON.parse(jsonStr);
+  assert.equal(parsed.nbformat, 4);
+  assert.equal(parsed.nbformat_minor, 5);
+  assert.equal(parsed.cells.length, 13);
+  assert.ok(jsonStr.includes('INDIA_AQI_COMPLETE_20251126.csv'));
+  assert.ok(jsonStr.includes('KNNImputer'));
+  assert.ok(jsonStr.includes('igp_corridor_cleaned_38cols.csv'));
+});
+
+
 
